@@ -1,0 +1,5 @@
+build
+.cache
+.vscode
+viewer
+.DS_Store

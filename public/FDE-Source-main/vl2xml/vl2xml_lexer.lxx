@@ -1,0 +1,985 @@
+
+%{
+#include <assert.h>
+#include <iostream>
+#include "vl2xml_YYSTYPE.h"
+#include "vl2xml_parser.hpp"
+#include <map>
+#include <list>
+
+#define YY_NO_UNISTD_H
+
+#undef DEBUG
+
+#ifdef DEBUG_PRINT
+#undef DEBUG_PRINT
+#undef DEBUG_PRINTLN
+#undef DEBUG_PRINTMORE
+#endif
+#ifdef DEBUG
+#define DEBUG_PRINT( x )     { cout << "# " << x; }
+#define DEBUG_PRINTLN( x )   { cout << "# " << x << endl; }
+#define DEBUG_PRINTMORE( x ) { cout << x; }
+#else
+#define DEBUG_PRINT( x )
+#define DEBUG_PRINTLN( x )
+#define DEBUG_PRINTMORE( x )
+#endif
+
+using namespace std;
+
+void yy_defineMacro();
+void yy_beginConditionalMacro();
+void yy_elseConditionalMacro();
+void yy_endConditionalMacro();
+void yy_undefineMacro();
+void yy_expandMacro();
+void yy_includeFile();
+
+void yyerror(const char *str);
+char        *yyfilename;
+
+struct yy_macro {
+    char    key[256];
+    char    data[1024];
+};
+
+struct yy_macro_compare
+{
+  bool operator()(const char* s1, const char* s2) const
+  {
+    return strcmp(s1, s2) < 0;
+  }
+};
+
+map<const char*, yy_macro*, yy_macro_compare> yy_macro_table;
+
+struct yy_includeState {
+    YY_BUFFER_STATE     buffer;
+    int              lineNo;
+    char            *filename;
+};
+std::list<yy_includeState>      yy_includeStack;
+
+typedef enum{IF_TRUE, IF_FALSE, ELSE_TRUE, ELSE_FALSE} yy_conditionalStatus;
+std::list<yy_conditionalStatus>                        yy_conditionalStack;
+
+%}
+
+%array 8192
+
+%x MACRO_EXCLUDE
+%x TRANSLATE_OFF
+%x LINE_COMMENT
+%x BLOCK_COMMENT
+
+%s SYNTHESIS_ATTRIBUTE_ON	
+
+%option yylineno noreject stack never-interactive
+
+%%
+
+\`define                 { yy_defineMacro(); }
+\`undef                  { yy_undefineMacro(); }
+\`ifdef                  { yy_beginConditionalMacro(); }
+\`else                   { yy_elseConditionalMacro(); }
+\`endif                  { yy_endConditionalMacro(); }
+<MACRO_EXCLUDE>\`ifdef   { yy_beginConditionalMacro(); }
+<MACRO_EXCLUDE>\`else    { yy_elseConditionalMacro(); }
+<MACRO_EXCLUDE>\`endif   { yy_endConditionalMacro(); }
+<MACRO_EXCLUDE>.         /* ignore macro exclusions */;
+<MACRO_EXCLUDE>\n        /* ignore macro exclusions */;
+\`include                { yy_includeFile(); }
+\`timescale[^\n]*\n      /* ignore timescale directives */;
+
+\`[a-zA-Z][a-zA-Z0-9_]*  { yy_expandMacro(); }
+
+\$[a-zA-Z][a-zA-Z0-9_]* {
+                    yylval.str.s = new char[yyleng];
+                    memcpy(yylval.str.s, &(yytext[1]), (yyleng-1)*sizeof(char));
+                    yylval.str.s[yyleng-1] = '\0'; 
+                    return VLOG_SYSTEM_IDENTIFIER; 
+                    }
+
+\"[^\"]*\"          {
+                    yylval.str.s = new char[yyleng-1];
+                    memcpy(yylval.str.s, &(yytext[1]), (yyleng-2)*sizeof(char));
+                    yylval.str.s[yyleng-2] = '\0';
+                    return VLOG_STRING;
+                    }
+[0-9]+\.[0-9]+     {
+										yylval.str.s = new char[yyleng-1];
+                    memcpy(yylval.str.s, &(yytext[0]), (yyleng)*sizeof(char));
+                    yylval.str.s[yyleng-1] = '\0';
+                    return VLOG_DOUBLE_STR;
+										}
+
+module              return VLOG_MODULE;
+parameter           return VLOG_PARAMETER;
+defparam            return VLOG_DEFPARAM;
+assign              return VLOG_ASSIGN;
+wire                return VLOG_WIRE;
+wireand             return VLOG_WIREAND;
+wireof              return VLOG_WIREOR;
+supply0             return VLOG_SUPPLY0;
+supply1             return VLOG_SUPPLY1;
+tri                 return VLOG_TRI;
+tri0                return VLOG_TRI0;
+tri1                return VLOG_TRI1;
+trian               return VLOG_TRIAND;
+trior               return VLOG_TRIOR;
+input               return VLOG_INPUT;
+integer             return VLOG_INTEGER;
+output              return VLOG_OUTPUT;
+begin               return VLOG_BEGIN;
+end                 return VLOG_END;
+inout               return VLOG_INOUT;
+reg                 return VLOG_REG;
+posedge             return VLOG_POSEDGE;
+negedge             return VLOG_NEGEDGE;
+initial             return VLOG_INITIAL;
+always              return VLOG_ALWAYS;
+if                  return VLOG_IF;
+else                return VLOG_ELSE;
+case                return VLOG_CASE;
+casex               return VLOG_CASEX;
+casez               return VLOG_CASEZ;
+endcase             return VLOG_ENDCASE;
+default             return VLOG_DEFAULT;
+endmodule           return VLOG_ENDMODULE;
+function            return VLOG_FUNCTION;
+endfunction         return VLOG_ENDFUNCTION;
+for                 return VLOG_FOR;
+
+and                 return VLOG_PRIMITIVE_AND;
+nand                return VLOG_PRIMITIVE_NAND;
+or                  return VLOG_PRIMITIVE_OR;
+nor                 return VLOG_PRIMITIVE_NOR;
+not                 return VLOG_PRIMITIVE_NOT;
+xor                 return VLOG_PRIMITIVE_XOR;
+xnor                return VLOG_PRIMITIVE_XNOR;
+buf                 return VLOG_PRIMITIVE_BUF;
+
+is									return VLOG_IS_IN_COMMENT;
+of									return VLOG_OF_IN_COMMENT;
+
+
+                    
+([0-9][0-9_]*)?[ \t]*'[dD][ \t]*[0-9xXzZ\?][0-9_xXzZ\?]* { /* decimal */
+
+                    // extract the size if it is specified
+                    int pos = 0;
+                    char buf[256];
+                    while(yytext[pos] != '\'' && yytext[pos] != ' ' && yytext[pos] != '\t') {
+                        buf[pos] = yytext[pos];
+                        ++pos;
+                    }
+                    buf[pos] = '\0';
+                    if (pos>0) {
+                        yylval.Num.number.bits = atoi(buf);
+                        if(yylval.Num.number.bits == 0) {
+                            yyerror("Invalid zero-length constant");
+                        }
+                    } else
+                        yylval.Num.number.bits = -1;                       
+                    
+                    // the rest of the token is the value                        
+                    // if the bitwidth is more than equal to 30, then just copy it into a string
+//                    if (yylval.number.bits >= 30 )
+//                    {
+//                        char *str = new char[yyleng-pos];				//allocate a string with null end for the rest
+//                        memcpy(str, yytext+pos+2, sizeof(char)*(yyleng-pos-1));
+//                        str[yyleng] = '\0';
+//                        strcpy(yylval.strValue, str);
+//                        
+//                        return VLOG_NUMBER; 
+//                    }
+//                    else
+//                    {
+                        int start = pos+1;
+                        int place_value = 1;
+                        char c;
+                        pos = yyleng-1;
+                        yylval.Num.number.value = 0;
+                        yylval.Num.number.negative = false;
+                        yylval.Num.number.xmask = yylval.Num.number.zmask = 0;
+                        while(pos != start) {
+                            c = yytext[pos--];
+                            if (c >= '0' && c <= '9') {
+                                yylval.Num.number.value += place_value * (c - '0');
+                                place_value *= 10;
+                            } else if (c == 'x' || c == 'X') {
+                                int bit_place_value = static_cast<int>( log( static_cast<float>(place_value) )/log(2.0) );
+                                yylval.Num.number.xmask += 15 << bit_place_value;
+                            } else if (c == 'z' || c == 'Z' || c == '?') {
+                                int bit_place_value = static_cast<int>( log( static_cast<float>(place_value) )/log(2.0) );
+                                yylval.Num.number.zmask += 15 << bit_place_value;
+                            } else if (c == '_' || yytext[pos] != ' ' || yytext[pos] != '\t')
+                                ; // ignore
+                            else {
+                                yyerror("Parsing decimal constant failed");
+                            }
+                        }
+                            
+                        
+                        // if the bit size has not been specified, calculate
+                        if (yylval.Num.number.bits == -1) {
+                            if (yylval.Num.number.value == 0)
+                                yylval.Num.number.bits = 1;
+                            else {
+                                int number = yylval.Num.number.value;
+                                yylval.Num.number.bits = 0;
+                                while(number>0) {
+                                    number >>= 1;
+                                    yylval.Num.number.bits++;
+                                }
+                            }
+                        }
+                        if (yylval.Num.number.value > static_cast<unsigned int>(pow(2.0,yylval.Num.number.bits))) {
+                            cerr << "WARNING: Truncating constant at " << yyfilename << ":" << yylineno << endl;
+                            yylval.Num.number.value = yylval.Num.number.bits % (int)pow(2.0,yylval.Num.number.bits);
+                        }
+                        
+                        return VLOG_NUMBER; 
+//                    }                    
+                }
+
+([0-9][0-9_]*)?[ \t]*\'[oO][ \t]*[0-7xXzZ\?][0-7_xXzZ\?]*      {   /* octal */
+
+                    // extract the size if it is specified
+                    int pos = 0;
+                    char buf[256];
+                    while(yytext[pos] != '\'' && yytext[pos] != ' ' && yytext[pos] != '\t') {
+                        buf[pos] = yytext[pos];
+                        ++pos;
+                    }
+                    buf[pos] = '\0';
+                    if (pos>0) {
+                        yylval.Num.number.bits = atoi(buf);
+                        if(yylval.Num.number.bits == 0) {
+                            yyerror("Invalid zero-length constant");
+                        }
+                    } else
+                        yylval.Num.number.bits = -1;
+                    
+                    // the rest of the token is the value
+                    int start = pos+1;
+                    int place_value = 1;
+                    char c;
+                    pos = yyleng-1;
+                    yylval.Num.number.value = 0;
+                    yylval.Num.number.negative = false;
+                    yylval.Num.number.xmask = yylval.Num.number.zmask = 0;
+                    while(pos != start) {
+                        c = yytext[pos--];
+                        if (c >= '0' && c <= '7') {
+                            yylval.Num.number.value += place_value * (c - '0');
+                            place_value *= 8;
+                        } else if (c == 'x' || c == 'X') {
+                            int bit_place_value = static_cast<int>( log( static_cast<float>(place_value) )/log(2.0) );
+                            yylval.Num.number.xmask += 15 << bit_place_value;
+                        } else if (c == 'z' || c == 'Z' || c == '?') {
+                            int bit_place_value = static_cast<int>( log( static_cast<float>(place_value) )/log(2.0) );
+                            yylval.Num.number.zmask += 7 << bit_place_value;
+                        } else if (c == '_' || yytext[pos] != ' ' || yytext[pos] != '\t')
+                            ; // ignore
+                        else {
+                            yyerror("Parsing octal constant failed");
+                            exit(1);
+                        }
+                    }
+                        
+                    
+                    // if the bit size has not been specified, calculate
+                    if (yylval.Num.number.bits == -1) {
+                        if (yylval.Num.number.value == 0)
+                            yylval.Num.number.bits = 1;
+                        else {
+                            int number = yylval.Num.number.value;
+                            yylval.Num.number.bits = 0;
+                            while(number>0) {
+                                number >>= 1;
+                                yylval.Num.number.bits++;
+                            }
+                        }
+                    }
+                    if (yylval.Num.number.value > static_cast<unsigned int>(pow(2.0,yylval.Num.number.bits))) {
+                    cerr << "WARNING: Truncating constant at " << yyfilename << ":" << yylineno << endl;
+                        yylval.Num.number.value = yylval.Num.number.bits % (int)pow(2.0,yylval.Num.number.bits);
+                    }
+                    
+                    return VLOG_NUMBER; 
+                }
+
+
+([0-9][0-9_]*)?[ \t]*\'[bB][ \t]*[01xXzZ\?][01_xXzZ\?]*  {   /* binary */
+
+                    // extract the size if it is specified
+                    int pos = 0;
+                    char buf[256];
+                    while(yytext[pos] != '\'' && yytext[pos] != ' ' && yytext[pos] != '\t') {
+                        buf[pos] = yytext[pos];
+                        ++pos;
+                    }
+                    buf[pos] = '\0';
+                    if (pos>0) {
+                        yylval.Num.number.bits = atoi(buf);
+                        if(yylval.Num.number.bits == 0) {
+                            yyerror("Invalid zero-length constant");
+                        }
+                    } else
+                        yylval.Num.number.bits = -1;
+                    
+                    // the rest of the token is the value
+                    int start = pos+1;
+                    int place_value = 1;
+                    char c;
+                    pos = yyleng-1;
+                    yylval.Num.number.value = 0;
+                    yylval.Num.number.negative = false;
+                    yylval.Num.number.xmask = yylval.Num.number.zmask = 0;
+                    while(pos != start) {
+                        c = yytext[pos--];
+                        if (c >= '0' && c <= '1') {
+                            yylval.Num.number.value += place_value * (c - '0');
+                            place_value *= 2;
+                        } else if (c == 'x' || c == 'X') {
+                            int bit_place_value = static_cast<int>( log( static_cast<float>(place_value) )/log(2.0) );
+                            yylval.Num.number.xmask += 1 << bit_place_value;
+                        } else if (c == 'z' || c == 'Z' || c == '?') {
+                            int bit_place_value = static_cast<int>( log( static_cast<float>(place_value) )/log(2.0) );
+                            yylval.Num.number.zmask += 1 << bit_place_value;
+                        } else if (c == '_' || yytext[pos] != ' ' || yytext[pos] != '\t')
+                            ; // ignore
+                        else {
+                            yyerror("Parsing binary constant failed");
+                        }
+                    }
+                    
+                    // if the bit size has not been specified, calculate
+                    if (yylval.Num.number.bits == -1) {
+                        if (yylval.Num.number.value == 0)
+                            yylval.Num.number.bits = 1;
+                        else {
+                            int number = yylval.Num.number.value;
+                            yylval.Num.number.bits = 0;
+                            while(number>0) {
+                                number >>= 1;
+                                yylval.Num.number.bits++;
+                            }
+                        }
+                    }
+                    if (yylval.Num.number.value > static_cast<unsigned int>(pow(2.0,yylval.Num.number.bits))) {
+                        cerr << "WARNING: Truncating constant at " << yyfilename << ":" << yylineno << endl;
+                        yylval.Num.number.value = yylval.Num.number.bits % (int)pow(2.0,yylval.Num.number.bits);
+                    }
+                    return VLOG_NUMBER; 
+                }
+                
+([0-9][0-9_]*)?[ \t]*\'[hH][ \t]*[0-9a-fA-FxXzZ][0-9a-fA-F_xXzZ\?]*    {   /* hex */
+                
+                    // extract the size if it is specified
+                    int pos = 0;
+                    char buf[256];
+                    while(yytext[pos] != '\'' && yytext[pos] != ' ' && yytext[pos] != '\t') {
+                        buf[pos] = yytext[pos];
+                        ++pos;
+                    }
+                    buf[pos] = '\0';
+                    if (pos>0) {
+                        yylval.Num.number.bits = atoi(buf);
+                        if(yylval.Num.number.bits == 0) {
+                            yyerror("Invalid zero-length constant");
+                            exit(1);
+                        }
+                    } else
+                        yylval.Num.number.bits = -1;
+                    
+                    // the rest of the token is the value                        
+                    // if the bitwidth is more than equal to 30, then just copy it into a string
+                    if (yylval.Num.number.bits >= 30 )
+                    {
+                        char *str = new char[yyleng-pos-1];				//allocate a string with null end for the rest
+                        //memcpy(str, yytext+pos+2, sizeof(char)*(yyleng-pos-3));
+                        strncpy(str, yytext+pos+2, yyleng-pos-1);
+                        yylval.Num.strValue = str;
+                        
+                        return VLOG_NUMBER; 
+                    }
+                    else
+                    {                    
+                        int start = pos+1;
+                        int place_value = 1;
+                        char c;
+                        pos = yyleng-1;
+                        yylval.Num.number.value = 0;
+                        yylval.Num.number.negative = false;
+                        yylval.Num.number.xmask = yylval.Num.number.zmask = 0;
+                        while(pos != start) {
+                            c = yytext[pos--];
+                            if (c >= '0' && c <= '9') {
+                                yylval.Num.number.value += place_value * (c - '0');
+                                place_value *= 16;
+                            } else if (c >= 'a' && c <= 'f') {
+                                yylval.Num.number.value += place_value * (c - 'a' + 10);
+                                place_value *= 16;
+                            } else if (c >= 'A' && c <= 'F') {
+                                yylval.Num.number.value += place_value * (c - 'A' + 10);
+                                place_value *= 16;
+                            } else if (c == 'x' || c == 'X') {
+                                int bit_place_value = static_cast<int>( log( static_cast<float>(place_value) )/log(2.0) );
+                                yylval.Num.number.xmask += 15 << bit_place_value;
+                            } else if (c == 'z' || c == 'Z' || c == '?') {
+                                int bit_place_value = static_cast<int>( log( static_cast<float>(place_value) )/log(2.0) );
+                                yylval.Num.number.zmask += 15 << bit_place_value;
+                            } else if (c == '_' || yytext[pos] != ' ' || yytext[pos] != '\t')
+                                ; // ignore
+                            else {
+                                yyerror("Parsing hex constant failed");
+                            }
+                        }                            
+                        
+                        // if the bit size has not been specified, calculate
+                        if (yylval.Num.number.bits == -1) {
+                            if (yylval.Num.number.value == 0)
+                                yylval.Num.number.bits = 1;
+                            else {
+                                int number = yylval.Num.number.value;
+                                yylval.Num.number.bits = 0;
+                                while(number>0) {
+                                    number >>= 1;
+                                    yylval.Num.number.bits++;
+                                }
+                            }
+                        }
+                        if (yylval.Num.number.value > static_cast<unsigned int>(pow(2.0,yylval.Num.number.bits))) {
+                            cerr << "WARNING: Truncating constant at " << yyfilename << ":" << yylineno << endl;
+                            yylval.Num.number.value = yylval.Num.number.bits % (int)pow(2.0,yylval.Num.number.bits);
+                        }
+                        
+                        return VLOG_NUMBER; 
+                    }
+                }
+
+[0-9][0-9_]*    {   // decimal
+                    char *str = new char[yyleng+1];
+                    memcpy(str, yytext, sizeof(char)*yyleng);
+                    str[yyleng] = '\0';
+                    yylval.Num.number.value = atoi(str);
+                    yylval.Num.number.negative = false;
+                    
+                    // bit size is not specified, calculate
+                    if (yylval.Num.number.value == 0)
+                        yylval.Num.number.bits = 1;
+                    else {
+                        int number = yylval.Num.number.value;
+                        yylval.Num.number.bits = 0;
+                        if (number<0) {
+                            number *= -1;
+                            yylval.Num.number.bits++; // an extra bit is required to be a valid two's complement number
+                        }
+                        while(number>0) {
+                            number >>= 1;
+                            yylval.Num.number.bits++;
+                        }
+                    }
+                    delete [] str; 
+                    return VLOG_NUMBER; 
+                }
+                
+[a-zA-Z_][a-zA-Z0-9$_]*     {   /* identifier */
+                    yylval.str.s = new char[yyleng+1];
+                    memcpy(yylval.str.s, yytext, sizeof(char)*yyleng);
+                    yylval.str.s[yyleng] = '\0'; 
+                    yylval.str.Line_no=yylineno; 
+                    return VLOG_IDENTIFIER; 
+                }
+                
+\\[^ \t\n\r]+[ \n\t] {  /* identifier */
+                    yylval.str.s = new char[yyleng+1];
+                    memcpy(yylval.str.s, yytext, sizeof(char)*yyleng);
+                    yylval.str.s[yyleng-1] = ' ';
+                    yylval.str.s[yyleng] = '\0'; 
+                    yylval.str.Line_no=yylineno; 
+                    return VLOG_IDENTIFIER; 
+                }
+
+[a-zA-Z_]([a-zA-Z0-9$_]*\.[a-zA-Z_])+[a-zA-Z0-9$_]*     {   /* hierarchical identifier */
+                    yylval.str.s = new char[yyleng+1];
+                    memcpy(yylval.str.s, yytext, sizeof(char)*yyleng);
+                    yylval.str.s[yyleng] = '\0'; 
+                    yylval.str.Line_no=yylineno;
+                    return VLOG_HIERARCHICAL_IDENTIFIER; 
+                }
+
+\\[^ \t\n\r]+[ \n\t]\.[a-zA-Z_]+[a-zA-Z0-9$_]*			{	/* hierarchical identifier with escaped*/
+										yylval.str.s = new char[yyleng+1];
+                    memcpy(yylval.str.s, yytext, sizeof(char)*yyleng);
+                    yylval.str.s[yyleng] = '\0'; 
+                    yylval.str.Line_no=yylineno;
+                    return VLOG_HIERARCHICAL_IDENTIFIER; 	
+				}
+
+"//"[ \t]*synopsys[ \t]+translate_off    { DEBUG_PRINTLN("translate off"); BEGIN(TRANSLATE_OFF); }
+"//"[ \t]*synthesis[ \t]+translate_off   { DEBUG_PRINTLN("translate off"); BEGIN(TRANSLATE_OFF); }
+<TRANSLATE_OFF>"//"[ \t]*synopsys[ \t]+translate_on     { DEBUG_PRINTLN("translate on"); BEGIN(0); }
+<TRANSLATE_OFF>"//"[ \t]*synthesis[ \t]+translate_on    { DEBUG_PRINTLN("translate on"); BEGIN(0); }
+<TRANSLATE_OFF>.        /* ignore translate off */;
+<TRANSLATE_OFF>\n       /* ignore translate off */;
+
+"//"[ \t]*synthesis[ \t]+attribute[ \t]+    { cout << "synthesis attribute is on!\n"; BEGIN(SYNTHESIS_ATTRIBUTE_ON); return VLOG_ATTRIBUTE_HEADER; }	/*take care of the synthesis attribute here : <SYNTHESIS_ATTRIBUTE_ON>"is" { return VLOG_IS_IN_COMMENT; }*/
+<SYNTHESIS_ATTRIBUTE_ON>\n									{ cout << "synthesis attribute is off!\n"; BEGIN(0); }	/*return to the normal state*/
+
+
+"//"                    BEGIN(LINE_COMMENT);
+<LINE_COMMENT>.         /* ignore line comments */;
+<LINE_COMMENT>\n        BEGIN(0);
+"/*"                    BEGIN(BLOCK_COMMENT);
+<BLOCK_COMMENT>"*/"     BEGIN(0);
+<BLOCK_COMMENT>.        /* ignore block comments */;
+<BLOCK_COMMENT>\n       /* ignore block comments */;
+
+"==="               return VLOG_CASE_EQ;
+"=="                return VLOG_EQ;
+">="                return VLOG_GE;
+"<="                return VLOG_LE;
+"!=="               return VLOG_CASE_NE;
+"!="                return VLOG_NE;
+"~&"                return VLOG_NAND;
+"~^"                return VLOG_XNOR;
+"~|"                return VLOG_NOR;
+"^~"                return VLOG_XNOR;
+"<<"                return VLOG_LEFT_SHIFT;
+">>"                return VLOG_RIGHT_SHIFT;
+"&&"                return VLOG_LOG_AND;
+"||"                return VLOG_LOG_OR;
+[\%\-\!\(\@\)\<\>\=\^\+\*\,\&\#\|\~\/\:\?\;\{\}\.\]\[]  { return *yytext; }
+       
+\n                  { /* cout << "%" << yyfilename << "." << yylineno << endl; */ }
+[ \t]               /* ignore whitespace */;
+%%  
+
+void yy_undefineMacro() {
+    const int MAX_KEY_LENGTH = 256;
+    char key[MAX_KEY_LENGTH];
+
+    DEBUG_PRINT("undef: ")
+
+    int pos = 0;
+    int tok = 0;
+    char c;
+    
+    while(tok >= 0 && (c = yyinput()) != '\0') {
+
+        switch(tok) {
+        case 0:
+            // scan through whitespace
+            if (c != ' ' && c != '\t') {
+                if (pos == 0 || c == '\n') {
+                    yyerror("Parsing macro undefinition failed");
+                } else {
+                    pos = 0;
+                    unput(c);
+                    tok++;
+                    continue;
+                }
+            }
+            break;
+        case 1:
+            assert(pos < MAX_KEY_LENGTH);
+            // check for completion
+            if (c == '\n' || c == ' '|| c == '\t') {
+                // store this empty macro
+                tok = -1; // finished
+                key[pos] = '\0';
+                map<const char*, yy_macro*, yy_macro_compare>::iterator it = yy_macro_table.find(key);
+                if (it != yy_macro_table.end()) {
+                    yy_macro_table.erase(it);
+                    assert(it->second);
+                    delete it->second;
+                    DEBUG_PRINTMORE("\tkey = \"" << key << "\" DELETED" << endl)
+                } else {
+                    DEBUG_PRINTMORE("\tkey = \"" << key << "\" NONEXISTENT" << endl)
+                }
+            }
+            else {
+                key[pos] = c;
+            }
+            break;
+        }
+        pos++;
+    }
+}
+
+void yy_defineMacro() {
+    const int MAX_KEY_LENGTH = 256;
+    const int MAX_DATA_LENGTH = 1024;
+    char key[MAX_KEY_LENGTH];
+    char data[MAX_DATA_LENGTH];
+    
+    assert(yyleng<MAX_KEY_LENGTH);
+    memcpy(key, yytext, sizeof(char)*yyleng);
+    key[yyleng] = '\0'; 
+
+    DEBUG_PRINT("define: ")
+    
+    int pos = 0;
+    bool anotherline = false;
+    int tok = 0;
+    char c;
+    
+    while(tok < 4 && (c = yyinput()) != '\0') {
+    
+        // are we expecting/waiting for a continuation to the next line?
+        if (anotherline) {
+            if (c == '\n')
+                anotherline = false;
+            else if (c != ' ' && c != '\t') {
+                yyerror("Parsing macro definition failed");
+            }
+            continue;
+        }
+        if (c == '\\') {
+            anotherline = true;
+            continue;
+        }
+
+        switch(tok) {
+        case 0:
+            // scan through whitespace
+            if (c != ' ' && c != '\t') {
+                if (pos == 0 || c == '\n') {
+                    yyerror("Parsing macro undefinition failed");
+                } else {
+                    pos = 0;
+                    unput(c);
+                    tok++;
+                    continue;
+                }
+            }
+            break;
+        case 1:
+            assert(pos < MAX_KEY_LENGTH);
+            // check for completion
+            if (c == '\n') {
+                // store this empty macro
+                tok = 4; // finished
+                key[pos] = '\0';
+                yy_macro *m = new yy_macro;
+                strcpy(m->key, key);
+                strcpy(m->data, "");
+                yy_macro_table[m->key] = m;
+                DEBUG_PRINTMORE("\tkey = \"" << key << "\" data = \"\"" << endl)
+            }
+            else if (c != ' ' && c != '\t')
+                key[pos] = c;
+            else {
+                key[pos] = '\0';
+                tok++;
+            }
+            break;
+        case 2:
+            // scan through whitespace
+            if (c == '\n') {
+                // store this empty macro
+                tok = 4; // finished
+                yy_macro *m = new yy_macro;
+                strcpy(m->key, key);
+                strcpy(m->data, "");
+                yy_macro_table[m->key] = m;
+                DEBUG_PRINTMORE("\tkey = \"" << key << "\" data = \"\"" << endl)
+            }
+            else if (c != ' ' && c != '\t') {
+                pos = 0;
+                unput(c);
+                tok++;
+                continue;
+            }
+            break;
+        case 3:
+            assert(pos < MAX_DATA_LENGTH);
+            if (c == '\n') {
+                // store this non-empty macro
+                tok = 4; // finished
+                data[pos] = '\0';
+                yy_macro *m = new yy_macro;
+                strcpy(m->key, key);
+                strcpy(m->data, data);
+                yy_macro_table[m->key] = m;
+                DEBUG_PRINTMORE("\tkey = \"" << key << "\" data = \"" << data << "\"" << endl)
+            } else if (pos > 0 && data[pos-1] == '/' && c == '/') {
+                // terminated by a one-linecomment
+                tok = 4; // finished
+                data[pos-1] = '\0';
+                unput('/');
+                unput('/');
+                yy_macro *m = new yy_macro;
+                strcpy(m->key, key);
+                strcpy(m->data, data);
+                yy_macro_table[m->key] = m;
+                DEBUG_PRINTMORE("\tkey = \"" << key << "\" data = \"" << data << "\"" << endl) 
+            }
+            data[pos] = c;
+            break;
+        }
+        pos++;
+    }
+    
+}
+
+void yy_expandMacro() {
+    char    buf[256];
+    assert(yyleng<256);
+    memcpy(buf, yytext, sizeof(char)*yyleng);
+    buf[yyleng] = '\0'; 
+    char    *key = buf+sizeof(char);
+    
+    map<const char*, yy_macro*, yy_macro_compare>::iterator it = yy_macro_table.find(key);
+    if (it == yy_macro_table.end()) {
+        cerr << "WARNING: undefined macro \"" << key << "\".  Replacing with empty string at " << yyfilename << ":" << yylineno << endl;
+        return;
+    }
+    
+    yy_macro *m = it->second;
+    DEBUG_PRINTLN("macro: \"" << key << "\" = \"" << m->data << "\"")
+    int pos = strlen(m->data);
+    while(pos > 0) {
+        unput(m->data[--pos]);
+    }
+}
+
+char *appendToPath(const char *currentFile, const char *newFile) {
+
+    // exclude the current file from the current path
+    int currentPathLen = strlen(currentFile);
+    // back up until we reach a delimiter or the beginning of the string
+    while(currentPathLen > 0 && currentFile[currentPathLen] != '/') {
+        --currentPathLen;
+    }
+    if (currentFile[currentPathLen] == '/') {
+        // do include the trailing '/' in the path prefix
+        ++currentPathLen;
+    }
+
+    // if the new file contains an absolute path, completely ignore the current
+    if (newFile[0] == '/') {
+        currentPathLen = 0;
+    }
+
+    // allocate memory for new path
+    char *newPath = new char[currentPathLen+strlen(newFile)+1];
+
+    // copy the current path (minus filename)
+    memcpy(newPath, currentFile, sizeof(char)*currentPathLen);
+    
+    // append new file
+    memcpy(&(newPath[currentPathLen]), newFile, strlen(newFile)+1);
+    
+    return newPath;
+}
+
+void yy_includeFile() {
+    const int MAX_PATH_LENGTH = 512;
+    char path[MAX_PATH_LENGTH];
+
+    int pos = 0;
+    int tok = 0;
+    char c;
+
+    while(tok >= 0 && (c = yyinput()) != '\0') {
+
+        switch(tok) {
+        case 0:
+            // scan through whitespace
+            if (c == '\"') {
+                tok++;
+            } else if (c != ' ' && c != '\t') {
+                yyerror("Parsing include directive failed");
+            }
+            break;
+        case 1:
+            assert(pos < MAX_PATH_LENGTH);
+            // check for completion
+            if (c == '\"') {
+                tok = -1; // finished
+                path[pos] = '\0';
+            }
+            else if (c == '\n') {
+                yyerror("Parsing include directive failed");
+            }
+            else {
+                path[pos++] = c;
+            }
+            break;
+        }
+    }
+
+    assert(yy_includeStack.size() < 100); // check for cyclic include
+    yy_includeState    state;
+    state.buffer = YY_CURRENT_BUFFER;
+    state.lineNo = yylineno;
+    state.filename = yyfilename;
+    yy_includeStack.push_front(state);
+    
+    yyfilename = appendToPath(yyfilename, path);
+    cout << "Including file \"" << yyfilename << "\"" << endl;
+    yyin = fopen( yyfilename, "r" );
+    if ( ! yyin ) {
+        // restore previous state
+        yy_includeStack.pop_front();
+        yy_switch_to_buffer( state.buffer );
+        yyfilename = state.filename;
+        yylineno = state.lineNo;
+        yyerror("Could not open include file");
+    }
+    yy_switch_to_buffer(yy_create_buffer( yyin, YY_BUF_SIZE ));
+    yylineno = 1;
+}
+
+void yy_beginConditionalMacro() {
+    const int MAX_KEY_LENGTH = 256;
+    char key[MAX_KEY_LENGTH];
+
+    DEBUG_PRINT("ifdef: ")
+
+    int pos = 0;
+    int tok = 0;
+    char c;
+    
+    while(tok >= 0 && (c = yyinput()) != '\0') {
+
+        switch(tok) {
+        case 0:
+            // scan through whitespace
+            if (c != ' ' && c != '\t') {
+                if (pos == 0 || c == '\n') {
+                    yyerror("Parsing conditional directive failed");
+                } else {
+                    pos = 0;
+                    unput(c);
+                    tok++;
+                    continue;
+                }
+            }
+            break;
+        case 1:
+            assert(pos < MAX_KEY_LENGTH);
+            // check for completion
+            if (c == '\n' || c == ' '|| c == '\t') {
+                tok = -1; // finished
+                key[pos] = '\0';
+            }
+            else {
+                key[pos] = c;
+            }
+            break;
+        }
+        pos++;
+    }
+
+    yy_conditionalStatus conditionValue;    
+    map<const char*, yy_macro*, yy_macro_compare>::iterator it = yy_macro_table.find(key);
+    if (it != yy_macro_table.end()) {
+        conditionValue = IF_TRUE;
+        DEBUG_PRINTMORE("\t" << key << " TRUE" << endl)
+    } else {
+        conditionValue = IF_FALSE;
+        DEBUG_PRINTMORE("\t" << key << " FALSE" << endl)
+    }
+
+    yy_conditionalStack.push_front(conditionValue);
+    if (conditionValue == IF_FALSE) {
+        yy_push_state(MACRO_EXCLUDE);
+    }
+}
+
+void yy_elseConditionalMacro() {
+    if (yy_conditionalStack.empty()) {
+        yyerror("Unmatched conditional pair (an extra else?)");
+    }
+    
+    DEBUG_PRINT("else: ")
+    
+    if (yy_conditionalStack.front() == IF_TRUE) {
+        DEBUG_PRINTMORE("false" << endl)
+        yy_push_state(MACRO_EXCLUDE);
+        yy_conditionalStack.pop_front();
+        yy_conditionalStack.push_front(ELSE_FALSE);
+    } else if (yy_conditionalStack.front() == IF_FALSE ){
+        DEBUG_PRINTMORE("true" << endl)
+        yy_pop_state();
+        yy_conditionalStack.pop_front();
+        yy_conditionalStack.push_front(ELSE_TRUE);
+    } else {
+        yyerror("Unmatched conditional pair (two successive elses)");
+    }
+    
+}
+
+void yy_endConditionalMacro() {
+    if (yy_conditionalStack.empty()) {
+         yyerror("Unmatched conditional pair (an extra else?)");
+    }
+    
+    DEBUG_PRINTLN("endif")
+    
+    if (yy_conditionalStack.front() == IF_FALSE || yy_conditionalStack.front() == ELSE_FALSE) {
+        yy_pop_state();
+    }
+    
+    yy_conditionalStack.pop_front();
+}
+
+int yywrap() {
+
+    if( !yy_includeStack.empty() ) {
+        yy_includeState state(yy_includeStack.front());
+        yy_includeStack.pop_front();
+        
+        DEBUG_PRINTLN("include: " << yyfilename << "... finished")
+        delete yyfilename;
+        yy_delete_buffer( YY_CURRENT_BUFFER );
+        yy_switch_to_buffer( state.buffer );
+        yylineno = state.lineNo;
+        yyfilename = state.filename;
+       
+        return 0;
+    }
+
+    return 1;
+}
+
+void initializeParser(const char* currentFile)
+{
+    //parserGlobal = newParserGlobal(getDesign());
+    //const char* currentFile = parserGlobal->getCurrentFile();
+    yyin = fopen(currentFile, "r");
+    //printSupply("read in source file: \'%s\'", currentFile);
+
+#ifdef ENGINEER
+    if (getenv("VF_DEBUG_LEX")) {
+        //parserGlobal->setDebugLexOn();
+    }
+    if (getenv("VF_DEBUG_YACC")) {
+        //parserGlobal->setDebugYaccOn();
+    }
+#endif
+}
+
+/*
+[\+\-]?[0-9_]+\.[0-9_]+     {   // real
+                    yylval.number.value = 0;
+                    cerr << "WARNING: Unsupported number format.  Assuming zero at " << yyfilename << ":" << yylineno << endl;
+                    return VLOG_NUMBER; 
+                }
+[\+\-]?[0-9_]+\.[0-9_]+[eE][\+\-]?[0-9_]+ { // real
+                    yylval.number.value = 0;
+                    cerr << "WARNING: Unsupported number format.  Assuming zero at " << yyfilename << ":" << yylineno << endl;
+                    return VLOG_NUMBER; 
+                }
+[\+\-]?[0-9_]+[eE][\+\-]?[0-9_]+ {  // real
+                    yylval.number.value = 0; 
+                    cerr << "WARNING: Unsupported number format.  Assuming zero at " << yyfilename << ":" << yylineno << endl;
+                    return VLOG_NUMBER; 
+                }
+*/

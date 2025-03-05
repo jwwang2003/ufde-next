@@ -1,0 +1,1396 @@
+
+%{
+#include <iostream>
+#include <string>
+#include <list>
+#include <map>
+#include <set>
+#include <cassert>
+
+
+#include "VerilogMisc.h"
+#include "module.h"
+#include "VerilogDesign.h"
+
+
+using std::list;
+using std::map;
+using std::set;
+using std::string;
+using std::cout;
+using std::endl;
+using std::cerr;
+using namespace VL2XML_PARSER;
+
+
+extern VerilogDesign *yydesign;		//use design defined by the main
+int                   yyportPosition;
+
+extern int            yylex (void);
+extern char          *yyfilename;
+extern int            yylineno;
+extern char          *yytext;
+extern int            yyleng;
+
+void 									yyerror(const char *str);
+
+#define			YYDEBUG		1
+
+#define DEBUG
+/* need to redefine these macros*/
+#ifdef DEBUG_PRINT		
+#undef DEBUG_PRINT
+#undef DEBUG_PRINTLN
+#undef DEBUG_PRINTMORE
+#endif
+/*redefine debug macros*/
+#ifdef DEBUG
+#define DEBUG_PRINT( x )     { cout << "# " << x; }
+#define DEBUG_PRINTLN( x )   { cout << "# " << x << endl; }
+#define DEBUG_PRINTMORE( x ) { cout << x; }
+#else
+#define DEBUG_PRINT( x )
+#define DEBUG_PRINTLN( x )
+#define DEBUG_PRINTMORE( x )
+#endif
+
+#define			YYMAXDEPTH	40000
+
+#include "vl2xml_YYSTYPE.h"
+
+
+%}
+
+%union 
+{
+    struct {
+        bool                                negative;       // sign flag
+        int                                 bits;           // bit length
+		int									radix;
+        unsigned int                        value;          // integer value
+        unsigned int                        zmask;          // mask of bits that were 'z'
+        unsigned int                        xmask;          // mask of bits that were 'x'
+    } number;
+    struct{
+        char*                                   s;			// string
+        int                                     Line_no=0;
+    }str;		// string
+	char*									strValue;		// string version of primary value
+   
+    Expression              *expression;
+    list<Expression*>  *expressions;
+    Primary                 *primary;
+    list<Primary*>     *primaries;
+    Bundle                  *bundle;
+    struct{
+        struct {
+            bool                                negative;       // sign flag
+            int                                 bits;           // bit length
+		    int									radix;
+            unsigned int                        value;          // integer value
+            unsigned int                        zmask;          // mask of bits that were 'z'
+            unsigned int                        xmask;          // mask of bits that were 'x'
+        } number;
+        char*                                   strValue;			// string
+    } Num;
+	VL2XML_PARSER::VerilogModule          *module;
+    list<VPort*>           *ports;
+    list<PortConnection*> 	*portConnections;
+    Assignment                	*assignment;
+    Declaration                	*declaration;						/*no use so far*/
+    PortConnection             	*portConnection;
+    Instantiation              	*instantiation;
+  
+    Statement               *statement;
+    list<Statement*>   *statements;
+    list<Case*>        *cases;
+
+    Trigger                 *trigger;
+    list<Trigger*>     *triggers;
+    
+    Attribute										*attribute;
+   
+    struct {
+        list<Assignment*>    *assignments;
+        list<AlwaysBlock*>   *alwaysBlocks;
+        list<Statement*>     *initialBlocks; 
+        list<Instantiation*> *instantiations;
+        list<Declaration*>   *declarations;        
+        list<Function*>      *functions;
+        list<Declaration*>   *parameterOverrides;
+        list<Attribute*>		 *attributes;
+    } decls;
+    
+} 
+%token <str> VLOG_IDENTIFIER VLOG_HIERARCHICAL_IDENTIFIER VLOG_SYSTEM_IDENTIFIER VLOG_STRING VLOG_DOUBLE_STR
+%token <Num> VLOG_NUMBER
+%token VLOG_MODULE VLOG_ASSIGN VLOG_WIRE VLOG_REG VLOG_INPUT VLOG_OUTPUT VLOG_INOUT 
+%token VLOG_BEGIN VLOG_END VLOG_ENDMODULE VLOG_ALWAYS VLOG_POSEDGE VLOG_NEGEDGE
+%token VLOG_IF VLOG_ELSE VLOG_CASE VLOG_ENDCASE VLOG_DEFAULT VLOG_INITIAL 
+%token VLOG_CASEX VLOG_CASEZ VLOG_INTEGER VLOG_FUNCTION VLOG_ENDFUNCTION VLOG_FOR
+%token VLOG_PARAMETER VLOG_DEFPARAM VLOG_SUPPLY0 VLOG_SUPPLY1 VLOG_TRI
+%token VLOG_WIREAND VLOG_WIREOR VLOG_TRI0 VLOG_TRI1 VLOG_TRIAND VLOG_TRIOR
+%token VLOG_PRIMITIVE_AND VLOG_PRIMITIVE_NAND VLOG_PRIMITIVE_NOR VLOG_PRIMITIVE_OR 
+%token VLOG_PRIMITIVE_XOR VLOG_PRIMITIVE_XNOR VLOG_PRIMITIVE_NOT VLOG_PRIMITIVE_BUF
+%token VLOG_ATTRIBUTE_HEADER VLOG_IS_IN_COMMENT VLOG_OF_IN_COMMENT
+
+%error-verbose
+
+%right '?' ':'
+%left VLOG_LOG_AND
+%left VLOG_LOG_OR
+%left '|' VLOG_NOR
+%left '^' VLOG_XNOR
+%left '&' VLOG_NAND
+%left VLOG_EQ VLOG_NE VLOG_CASE_EQ VLOG_CASE_NE
+%left VLOG_GE VLOG_LE '>' '<'
+%left VLOG_LEFT_SHIFT VLOG_RIGHT_SHIFT
+%left '+' '-'
+%left '*' '/' '%'
+%right '~' '!'
+
+%type <expression> expression constant_expression
+%type <ports> ports port list_of_ports
+%type <decls> parameter_assignments net_declarations norange_net_declarations reg_declarations 
+%type <primary> net
+%type <expression> net_lval
+%type <module> module_declaration
+%type <assignment> continuous_assignment
+%type <instantiation> module_instantiation primitive_instantiation
+%type <declaration> parameter_assignment
+%type <decls> all_declaration_items block_declaration_items
+%type <portConnection> ordered_port_connection named_port_connection
+%type <portConnections> ordered_port_connections named_port_connections port_connections
+%type <triggers> triggers
+%type <trigger> trigger
+%type <statement> statement
+%type <statements> statements
+%type <cases> case_items
+%type <expressions> case_conditions parameter_value_assignments parameter_value_list expressions net_lvals
+%type <attribute> attribute_in_comment
+%type <decls> module_items continuous_assignments all_declaration_item net_decl_assignments
+
+%start all
+
+%%
+
+all:    /* empty */
+    {
+    } 
+    | all module_declaration {
+        yydesign->modules.push_back($2);
+    }
+    | all module_declaration ';' {
+        yydesign->modules.push_back($2);    
+    }
+    ;
+
+module_declaration:
+    VLOG_MODULE VLOG_IDENTIFIER
+    {
+		$<module>$ = new VL2XML_PARSER::VerilogModule();			//here $$ only stands for the value of the mid-action
+		$<module>$->name = $2.s;
+        $<module>$->design = yydesign;        
+    
+    yyportPosition = 0;
+    }
+    list_of_ports ';' module_items VLOG_ENDMODULE
+    {
+        $$ = $<module>3;
+        assert($$);
+        assert($6.declarations && 
+               $6.alwaysBlocks && 
+               $6.initialBlocks &&
+               $6.parameterOverrides &&
+               $6.instantiations && 
+               $6.assignments);
+        $$->ports = $4;
+        for(list<Declaration*>::iterator it = $6.declarations->begin(); it != $6.declarations->end(); it++) {
+            Declaration *declaration = *it;
+            if (declaration->type == Declaration::PARAMETER) {
+                $$->parameters.push_back(declaration);
+            } else {
+                $$->declarations.push_back(declaration);
+            }
+        }
+        $$->alwaysBlocks = $6.alwaysBlocks;
+        $$->initialBlocks = $6.initialBlocks;
+				$$->instantiations = $6.instantiations;
+				$$->parameterOverrides = $6.parameterOverrides;
+        $$->assignments = $6.assignments;
+        $$->functions = $6.functions;
+        $$->attributes = $6.attributes;
+    }
+    ;
+
+list_of_ports:	/* empty */
+    {
+        $$ = NULL;
+    }
+    | '(' ports ')'
+    {
+        $$ = $2;    
+    }
+    ;
+    
+ports:  /* empty */
+    {
+        $$ = NULL;
+    }
+    | port
+    {
+        $$ = $1;
+    }
+    | ports ',' 
+    {
+        yyportPosition++;
+    } port {
+        assert($1);
+        assert($4);
+        $1->splice($1->end(), *($4));	//��port�Ƶ�ports��
+        $$ = $1;
+        delete $4;  
+    }
+    ;
+    
+port:   VLOG_IDENTIFIER
+    {
+        VPort *port = new VPort();
+        port->externalName = $1.s;
+        port->internalName = $1.s;
+        port->position = yyportPosition;
+        port->lineno=$1.Line_no;
+        $$ = new list<VPort *>(1,port);
+    }
+    | VLOG_IDENTIFIER '[' constant_expression ']'
+    {
+        VPort *port = new VPort();
+        port->externalName = $1.s;
+        port->internalName = $1.s;        
+        port->position = yyportPosition;
+        port->lineno=$1.Line_no;
+        $$ = new list<VPort *>(1,port);
+    }
+    | VLOG_IDENTIFIER '[' constant_expression ':' constant_expression ']'
+    {
+        VPort *port = new VPort();
+        port->externalName = $1.s;
+        port->internalName = $1.s;
+        port->position = yyportPosition;
+        port->lineno=$1.Line_no;
+        $$ = new list<VPort *>(1,port);
+    }
+    | '.' VLOG_IDENTIFIER '(' VLOG_IDENTIFIER ')'
+    {
+        VPort *port = new VPort();
+        port->externalName = $2.s;
+        port->internalName = $4.s;
+        port->position = yyportPosition;
+        port->lineno=$2.Line_no;
+        $$ = new list<VPort *>(1,port);
+    }
+    ;
+
+module_items: /* empty */
+    {		/*	not clear about the function below*/
+        $$.declarations = new list<Declaration*>;
+        $$.assignments = new list<Assignment*>;
+        $$.alwaysBlocks = new list<AlwaysBlock*>;
+        $$.initialBlocks = new list<Statement*>;
+        $$.parameterOverrides = new list<Declaration*>;
+        $$.instantiations = new list<Instantiation*>;
+        $$.functions = new list<Function*>;
+        $$.attributes = new list<Attribute*>;
+    }
+    | module_items all_declaration_item ';'//port,parameter,wire,reg,integer....declaration
+    {																			
+        $$ = $1;
+        assert($$.declarations);
+        assert($$.assignments);
+        assert($2.declarations);
+        $$.declarations->splice($$.declarations->end(), *($2.declarations));
+        if ($2.assignments) {	//designed for 'net_decl_assignments' in the all_declaration_item the rest are all NULL
+        														//i.e allow for 'input a = net1;' this kind of declaration
+            $$.assignments->splice($$.assignments->end(), *($2.assignments));
+            delete $2.assignments;
+        }
+        delete $2.declarations;
+    }
+    | module_items VLOG_ASSIGN delay3 continuous_assignments ';'		//only here handle the assign declaration
+    {
+        $$ = $1;
+        assert($$.assignments);
+        assert($4.assignments);
+        $$.assignments->splice($1.assignments->end(), *($4.assignments));
+        delete $4.assignments;
+    }
+    | module_items VLOG_ASSIGN strength continuous_assignments ';'		//only here handle the assign declaration
+    {
+        $$ = $1;
+        assert($$.assignments);
+        assert($4.assignments);
+        $$.assignments->splice($1.assignments->end(), *($4.assignments));
+        delete $4.assignments;
+    }
+    | module_items module_instantiation ';'
+    {
+        $$ = $1;
+        assert($1.instantiations);
+        assert($2);
+        $$.instantiations->push_back($2);        
+    }
+    | module_items VLOG_DEFPARAM parameter_assignments ';'
+    {
+        $$ = $1;
+        assert($$.declarations);
+        assert($3.declarations);
+        $$.parameterOverrides->splice($$.parameterOverrides->end(),
+                                            *($3.declarations));
+        delete $3.declarations;
+    }
+    | module_items VLOG_INITIAL statement
+    {
+    }
+    | module_items VLOG_ALWAYS '@' '(' triggers ')' statement
+    {
+    }
+    | module_items VLOG_ALWAYS '@' '(' ')' statement
+    {
+    }
+    | module_items VLOG_FUNCTION VLOG_IDENTIFIER ';' all_declaration_items statement VLOG_ENDFUNCTION
+    {
+    }
+    | module_items VLOG_FUNCTION '[' expression ':' expression ']' VLOG_IDENTIFIER ';' 
+        all_declaration_items statement VLOG_ENDFUNCTION
+    {
+    }
+    | module_items attribute_in_comment
+    {
+    	$$ = $1;
+    	$$.attributes->push_back($2);
+    }
+    ;
+
+parameter_assignments:
+    parameter_assignment
+    {
+        assert($1);
+        $1->start = NULL;
+        $1->stop = NULL;
+        $$.declarations = new list<Declaration*>(1,$1);
+    }
+    | '[' constant_expression ':' constant_expression ']' parameter_assignment
+    {		//don't support this non-standard syntax
+        assert($6);
+        $6->start = $2;
+        $6->stop = $4;
+        $$.declarations = new list<Declaration*>(1,$6);
+    }
+    | parameter_assignments ',' parameter_assignment
+    {
+        assert($1.declarations);
+        assert($3);
+        $3->start = $1.declarations->front()->start;//????????declaration???��???
+        $3->stop = $1.declarations->front()->stop;
+        $$ = $1;
+        $1.declarations->push_back($3);
+    }
+    ;
+    
+parameter_assignment:
+    VLOG_IDENTIFIER '=' constant_expression
+    {
+        $$ = new Declaration;
+        $$->name = $1.s;
+        $$->type = Declaration::PARAMETER;
+        $$->value = $3;
+        $$->lineno=$1.Line_no;
+    }
+    | VLOG_IDENTIFIER '=' VLOG_STRING
+    {
+    	  $$ = new Declaration;
+        $$->name = $1.s;
+        $$->type = Declaration::PARAMETER;
+        $$->value = new Expression(new Primary($3.s));
+        $$->lineno=$1.Line_no;
+    }
+    | VLOG_IDENTIFIER '=' VLOG_DOUBLE_STR
+    {
+    	  $$ = new Declaration;
+        $$->name = $1.s;
+        $$->type = Declaration::PARAMETER;
+        $$->value = new Expression(new Primary($3.s));
+        $$->lineno=$1.Line_no;
+    }
+    | VLOG_HIERARCHICAL_IDENTIFIER '=' constant_expression
+    {
+        $$ = new Declaration;
+        $$->name = $1.s;
+        $$->type = Declaration::PARAMETER;
+        $$->value = $3;
+    }
+    | VLOG_HIERARCHICAL_IDENTIFIER '=' VLOG_STRING 
+    {		
+    		$$ = new Declaration;
+        $$->name = $1.s;
+        $$->type = Declaration::PARAMETER;
+        $$->value = new Expression(new Primary($3.s));
+    }
+    | VLOG_HIERARCHICAL_IDENTIFIER '=' VLOG_DOUBLE_STR 
+    {		
+    		$$ = new Declaration;
+        $$->name = $1.s;
+        $$->type = Declaration::PARAMETER;
+        $$->value = new Expression(new Primary($3.s));
+    }
+    ;
+
+continuous_assignments:			//for assign declaration only
+    continuous_assignment
+    {
+        $$.assignments = new list<Assignment*>(1,$1);
+    }
+    | continuous_assignments ',' continuous_assignment
+    {
+        assert($1.assignments);
+        $1.assignments->push_back($3);
+    }
+    ;
+delay_value:
+    VLOG_NUMBER        { }
+    | VLOG_IDENTIFIER  { }
+/*  | constant_expression ':' constant_expression ':' constant_expression  */
+    ;
+    
+strength:/* Are you kidding me? */
+	  | '(' delay_value ',' delay_value ')'
+	  ;    
+    
+delay2: /* empty */
+    | '#' delay_value
+    | '#' '(' delay_value ',' delay_value ')'
+    ;
+
+delay3: /* empty */
+    | '#' delay_value
+    | '#' '(' delay_value ',' delay_value ',' delay_value ')'
+    ;
+    
+continuous_assignment:		//for assign declaration only
+    net_lval '=' expression
+    {
+        $$ = new Assignment();
+        $$->lval = $1;
+        $$->value = $3;
+        $$->lineno= $1->lineno;
+    }
+    ;
+
+net_lval://it is used only as a left net value for assignments
+    net
+    {
+        $$ = new Expression($1);
+        $$->lineno=$1->lineno;
+    }
+    | '{' net_lvals '}'
+    {
+        $$ = new Expression(new Bundle($2));
+    }
+    ;
+
+net_lvals:
+    net_lval
+    {
+        $$ = new list<Expression*>(1,$1);
+    }
+    | net_lvals ',' net_lval
+    {
+        assert($1);
+        $1->push_back($3);
+    }
+    ;
+
+net://used in continuous assignments and expression and portconnecton
+    VLOG_IDENTIFIER
+    {
+        $$ = new Primary($1.s);
+        $$->lineno=$1.Line_no;
+    }
+    | VLOG_IDENTIFIER '[' expression ']' 
+    {
+        $$ = new Primary($1.s, $3);
+        $$->lineno=$1.Line_no;
+    }
+    | VLOG_IDENTIFIER '[' expression ':' expression ']' //expression can be Parameter or Const
+    {
+        $$ = new Primary($1.s, $3, $5);
+        $$->lineno=$1.Line_no;
+    }
+    ;
+
+constant_expression:
+    VLOG_NUMBER
+    {
+    	  if ($1.number.bits >= 30)
+    	  	$$ = new Expression(new Primary(string($1.strValue), $1.number.bits));
+    	  else
+          $$ = new Expression(new Primary($1.number.value, $1.number.bits));//12'd16  value = 16, bits = 12
+        //cout << "The VLOG_NUMBER is " << $1.number.value << endl;
+    }
+    | VLOG_IDENTIFIER
+    {
+        $$ = new Expression(new Primary($1.s));//may be a parameter
+        $$->lineno=$1.Line_no;
+    }
+    | '(' constant_expression ')'
+    {
+        $$ = $2;
+    }
+    | constant_expression '+' constant_expression
+    {
+    }
+    | constant_expression '-' constant_expression
+    {
+    }
+    | constant_expression '*' constant_expression
+    {
+    }
+    | constant_expression '/' constant_expression
+    {
+    }
+    | constant_expression '%' constant_expression
+    {
+    }
+    | '-' constant_expression
+    {
+    }
+    | constant_expression VLOG_LEFT_SHIFT constant_expression
+    {
+    }
+    | constant_expression VLOG_RIGHT_SHIFT constant_expression
+    {
+    }
+    | constant_expression '?' constant_expression ':' constant_expression
+    {
+    }
+    | constant_expression VLOG_EQ constant_expression
+    {
+    }
+    | constant_expression VLOG_NE constant_expression
+    {
+    }
+    | constant_expression '<' constant_expression
+    {
+    }
+    | constant_expression '>' constant_expression
+    {
+    }
+    | constant_expression VLOG_LE constant_expression
+    {
+    }
+    | constant_expression VLOG_GE constant_expression
+    {
+    }
+    | constant_expression VLOG_LOG_AND constant_expression
+    {
+    }
+    | constant_expression VLOG_LOG_OR constant_expression
+    {
+    }
+    | '!' constant_expression
+    {
+    }
+    ;
+
+all_declaration_items: /* empty */
+    {
+        $$.declarations = new list<Declaration*>;    
+    }
+    | all_declaration_items all_declaration_item ';'
+    {
+        assert($1.declarations);
+        assert($2.declarations);
+        $$ = $1;
+        $$.declarations->splice($$.declarations->end(), *($2.declarations)); 
+    }
+    ;
+
+block_declaration_items: /* empty */
+    {
+    }
+    | block_declaration_items block_declaration_item ';'
+    {
+    }
+    ;
+
+block_declaration_item:
+    VLOG_REG reg_declarations
+    {
+    }
+    | VLOG_INTEGER norange_net_declarations
+    {
+    }
+    | VLOG_PARAMETER parameter_assignments
+    {
+    }
+    ;
+
+all_declaration_item:
+    VLOG_INPUT net_declarations
+    {
+        assert($2.declarations);
+        for(list<Declaration*>::iterator it = $2.declarations->begin(); it != $2.declarations->end(); it++) {
+            (*it)->type = Declaration::INPUT;
+        }
+        $$.assignments = NULL;
+        $$.declarations = $2.declarations;
+    }
+    | VLOG_OUTPUT net_declarations
+    {
+        assert($2.declarations);
+        for(list<Declaration*>::iterator it = $2.declarations->begin(); it != $2.declarations->end(); it++) {
+            (*it)->type = Declaration::OUTPUT;
+        }
+        $$.assignments = NULL;
+        $$.declarations = $2.declarations;
+    }
+    | VLOG_INOUT net_declarations
+    {
+        assert($2.declarations);
+        for(list<Declaration*>::iterator it = $2.declarations->begin(); it != $2.declarations->end(); it++) {
+            (*it)->type = Declaration::INOUT;
+        }
+        
+        $$.assignments = NULL;
+        $$.declarations = $2.declarations;
+    }
+    | VLOG_WIRE delay3 net_declarations
+    {
+        assert($3.declarations);
+        for(list<Declaration*>::iterator it = $3.declarations->begin(); 
+            it != $3.declarations->end(); it++) {
+            (*it)->type = Declaration::WIRE;
+        }
+        $$.assignments = NULL;
+        $$.declarations = $3.declarations;
+    }
+    | VLOG_TRI0 delay3 net_declarations
+    {
+    }
+    | VLOG_TRI1 delay3 net_declarations
+    {
+    }
+    | VLOG_TRIAND delay3 net_declarations
+    {
+    }
+    | VLOG_TRIOR delay3 net_declarations
+    {
+        
+    }
+    | VLOG_WIREAND delay3 net_declarations
+    {
+    }
+    | VLOG_WIREOR delay3 net_declarations
+    {
+    }
+    | VLOG_SUPPLY0 delay3 net_declarations
+    {
+    }
+    | VLOG_SUPPLY1 delay3 net_declarations
+    {
+    }
+    | VLOG_TRI delay3 net_declarations
+    {
+    }
+    | VLOG_WIRE delay3 net_decl_assignments
+    {
+        assert($3.declarations);
+        assert($3.assignments);
+        for(list<Declaration*>::iterator it = $3.declarations->begin(); 
+            it != $3.declarations->end(); it++) {
+            (*it)->type = Declaration::WIRE;
+        }
+        $$.assignments = $3.assignments;
+        $$.declarations = $3.declarations;
+    }
+    | VLOG_REG reg_declarations
+    {
+        assert($2.declarations);
+        for(list<Declaration*>::iterator it = $2.declarations->begin(); 
+            it != $2.declarations->end(); it++) {
+            (*it)->type = Declaration::REG;
+        }
+        $$.assignments = NULL;
+        $$.declarations = $2.declarations;
+    }
+    | VLOG_INTEGER norange_net_declarations
+    {
+    }
+    | VLOG_PARAMETER parameter_assignments
+    {
+        $$.assignments = NULL;
+        $$.declarations = $2.declarations;
+    }
+    ;
+
+net_decl_assignments:
+    '[' constant_expression ':' constant_expression ']' VLOG_IDENTIFIER '=' expression
+    {
+    	  assert($6.s);
+        Declaration *declaration = new Declaration();
+        declaration->name = $6.s;
+        declaration->start = $2;
+        declaration->stop = $4;
+        declaration->lineno=$6.Line_no;
+        $$.declarations = new list<Declaration*>(1, declaration);
+        Assignment *assignment = new Assignment();
+        assignment->lval = new Expression(new Primary($6.s));
+        assignment->value = $8;
+        assignment->lineno=$6.Line_no;
+        $$.assignments = new list<Assignment*>(1, assignment);
+    }
+    | VLOG_IDENTIFIER '=' expression
+    {
+    		Declaration *declaration = new Declaration();
+        declaration->name = $1.s;
+        declaration->start = NULL;
+        declaration->stop = NULL;
+        $$.declarations = new list<Declaration*>(1, declaration);
+        Assignment *assignment = new Assignment();
+        assignment->lval = new Expression(new Primary($1.s));
+        assignment->value = $3;
+        assignment->lineno=$1.Line_no;
+        $$.assignments = new list<Assignment*>(1, assignment);
+    }   
+    | net_decl_assignments ',' VLOG_IDENTIFIER '=' expression
+    {
+    		assert($1.declarations);
+        assert($1.assignments);
+        Declaration *declaration = new Declaration();
+        declaration->name = $3.s;
+        declaration->start = $1.declarations->front()->start;
+        declaration->stop = $1.declarations->front()->stop;
+        $$.declarations->push_back(declaration);
+        Assignment *assignment = new Assignment();
+        assignment->lval = new Expression(new Primary($3.s));
+        assignment->value = $5;
+        assignment->lineno=$3.Line_no;
+        $$.assignments->push_back(assignment);      
+    }
+    ;
+
+net_declarations:
+    '[' constant_expression ':' constant_expression ']' VLOG_IDENTIFIER//constant_expression can be Parameter(NET) or Number(CONST)
+    {
+        assert($6.s);
+        Declaration *declaration = new Declaration();
+        declaration->name = $6.s;
+        declaration->start = $2;
+        declaration->stop = $4;
+        declaration->lineno=$6.Line_no;
+        $$.declarations = new list<Declaration*>(1, declaration);
+    }
+    | VLOG_IDENTIFIER
+    {
+        Declaration *declaration = new Declaration();
+        declaration->name = $1.s;
+        declaration->start = NULL;
+        declaration->stop = NULL;
+        declaration->lineno=$1.Line_no;
+        $$.declarations = new list<Declaration*>(1, declaration);
+    }   
+    | net_declarations ',' VLOG_IDENTIFIER
+    {
+        assert($1.declarations);
+        Declaration *declaration = new Declaration();
+        declaration->name = $3.s;
+        declaration->start = $1.declarations->front()->start;//it is just like 'wire [7:0] n1, n2, n3;' the range in same as the first one
+        declaration->stop = $1.declarations->front()->stop;
+        declaration->lineno=$3.Line_no;
+        $$.declarations->push_back(declaration);
+        //cout << "The name is " << declaration->name << endl;
+//        cout << "The Front start is " << $1.declarations->front()->start->primary->number.intValue << endl; 
+//        cout << "The Front stop is " << $1.declarations->front()->stop->primary->number.intValue << endl; 
+    }
+    ;
+
+
+reg_declarations:
+    '[' constant_expression ':' constant_expression ']' VLOG_IDENTIFIER
+    {
+        assert($6.s);
+        Declaration *declaration = new Declaration();
+        declaration->name = $6.s;
+        declaration->start2D = declaration->stop2D = NULL;
+        declaration->start = $2;
+        declaration->stop = $4;
+        declaration->lineno=$6.Line_no;
+        $$.declarations = new list<Declaration*>(1, declaration);
+    }
+    | '[' constant_expression ':' constant_expression ']' VLOG_IDENTIFIER 
+      '[' constant_expression ':' constant_expression ']'
+    {
+        assert($6.s);
+        Declaration *declaration = new Declaration();
+        declaration->name = $6.s;
+        declaration->start2D = $8;
+        declaration->stop2D = $10;
+        declaration->start = $2;
+        declaration->stop = $4;
+        declaration->lineno=$6.Line_no;
+        $$.declarations = new list<Declaration*>(1, declaration);
+    }
+    | VLOG_IDENTIFIER
+    {
+        Declaration *declaration = new Declaration();
+        declaration->name = $1.s;
+        declaration->start2D = declaration->stop2D = NULL;
+        declaration->start = declaration->stop = NULL;
+        declaration->lineno=$1.Line_no;
+        $$.declarations = new list<Declaration*>(1, declaration);
+    }
+    | VLOG_IDENTIFIER '[' constant_expression ':' constant_expression ']'
+    {
+        Declaration *declaration = new Declaration();
+        declaration->name = $1.s;
+        declaration->start2D = $3;
+        declaration->stop2D = $5;
+        declaration->start = declaration->stop = NULL;
+        declaration->lineno=$1.Line_no;
+        $$.declarations = new list<Declaration*>(1, declaration);
+    } 
+    | reg_declarations ',' VLOG_IDENTIFIER
+    {
+        assert($1.declarations);
+        Declaration *declaration = new Declaration();
+        declaration->name = $3.s;
+        declaration->start2D = declaration->stop2D = NULL;
+        declaration->start = $1.declarations->front()->start;
+        declaration->stop = $1.declarations->front()->stop;
+        declaration->lineno=$3.Line_no;
+        $$.declarations->push_back(declaration);
+    }
+    | reg_declarations ',' VLOG_IDENTIFIER '[' constant_expression ':' constant_expression ']'
+    {
+        assert($1.declarations);
+        Declaration *declaration = new Declaration();
+        declaration->name = $3.s;
+        declaration->start2D = $5;
+        declaration->stop2D = $7;
+        declaration->start = $1.declarations->front()->start;
+        declaration->stop = $1.declarations->front()->stop;
+        declaration->lineno=$3.Line_no;
+        $$.declarations->push_back(declaration);
+    }
+    | VLOG_IDENTIFIER '=' constant_expression
+    {    	
+    	/* Not used because this is verilog 2000 */
+      Declaration *declaration = new Declaration();
+      declaration->name = $1.s;
+      declaration->lineno=$1.Line_no;
+      $$.declarations = new list<Declaration*>(1, declaration);
+    }
+    ;
+
+
+norange_net_declarations:
+    VLOG_IDENTIFIER
+    {
+    }   
+    | net_declarations ',' VLOG_IDENTIFIER
+    {
+    }
+    ;
+    
+expressions:
+    expression
+    {
+        $$ = new list<Expression*>;
+        $$->push_back($1);
+    }
+    | expressions ',' expression
+    {
+        assert($1);
+        $1->push_back($3);
+    }
+    ;
+
+ 
+expression://replication is not supported
+    '{' expressions '}'				//concatenations
+    {
+        $$ = new Expression(new Bundle($2));
+    }
+    | '{' expression '{' expressions '}' '}'		//replication is not supported here
+    {
+        $$ = new Expression(new Bundle($4,$2));
+    }    
+    | net											//normal wire type: 1->read, 2->addr[10], 3->data[10:0], 4->data[DATAWIDTH : 0]
+    {
+        $$ = new Expression($1);
+    }
+    | VLOG_NUMBER//connect to the GND or VCC like 1'b0 or 1'b1
+    {
+        $$ = new Expression(new Primary($1.number.value, $1.number.bits));
+        
+        //I think the commented out operation down below 
+        //is weird because it doesn't consider the 'x' and 'z'
+        //case in the number.However due to respect to UC Berkeley
+        //I just leave it in comment instead of deleting it.
+        //Liu Sha----08.10.31
+         
+        //$$->primary->number.xMask = 0;
+        //$$->primary->number.zMask = 0;
+        
+        $$->primary->number.xMask = $1.number.xmask;
+        $$->primary->number.zMask = $1.number.zmask;
+    }
+    | '(' expression ')'			//nothing
+    {
+        $$ = $2;
+    }
+    | VLOG_IDENTIFIER '(' expressions ')'		//don't understand this rule
+    {
+        $$ = new Expression(new Primary($1.s, $3));
+        $$->lineno=$1.Line_no;
+    }
+    | '~' expression
+    {
+    }
+    | expression '&' expression
+    {
+    }
+    | expression '+' expression
+    {
+    }
+    | expression '-' expression
+    {
+    }
+    | expression '*' expression
+    {
+    }   
+    | expression '%' expression
+    {
+    }
+    | expression '/' expression
+    {
+    }
+    | expression '|' expression
+    {
+    }
+    | expression '^' expression
+    {
+    }
+    | expression '?' expression ':' expression
+    {
+    }
+    | expression VLOG_NAND expression
+    {
+    }
+    | expression VLOG_NOR expression
+    {
+    }
+    | expression VLOG_XNOR expression
+    {
+    }
+    | '|' expression %prec '!'
+    {
+    }
+    | '&' expression %prec '!'
+    {
+    }
+    | '^' expression %prec '!'
+    {
+    }
+    | VLOG_NAND expression %prec '!'
+    {
+    }
+    | VLOG_NOR expression %prec '!'
+    {
+    }
+    | VLOG_XNOR expression %prec '!'
+    {
+    }
+    | expression VLOG_EQ expression
+    {
+    }
+    | expression VLOG_NE expression
+    {
+    }
+    | expression VLOG_CASE_EQ expression
+    {
+    }
+    | expression VLOG_CASE_NE expression
+    {
+    }
+    | expression '<' expression
+    {
+    }
+    | expression '>' expression
+    {
+    }
+    | expression VLOG_LE expression
+    {
+    }
+    | expression VLOG_GE expression
+    {
+    }
+    | expression VLOG_LOG_AND expression
+    {
+    }
+    | expression VLOG_LOG_OR expression
+    {
+    }
+    | '!' expression
+    {
+    }
+    | '+' expression %prec '!'
+    {
+    }
+    | '-' expression %prec '!'
+    {
+    }
+    | expression VLOG_LEFT_SHIFT expression
+    {
+    }
+    | expression VLOG_RIGHT_SHIFT expression
+    {
+    }
+    ;
+    
+primitive_instantiation:
+    VLOG_PRIMITIVE_AND delay2 '(' expression ',' expressions ')'
+    {
+    }
+    | VLOG_PRIMITIVE_AND delay2 VLOG_IDENTIFIER '(' expression ',' expressions ')'
+    {
+    }
+    | VLOG_PRIMITIVE_NAND delay2 '(' expression ',' expressions ')'
+    {
+    }
+    | VLOG_PRIMITIVE_NAND delay2 VLOG_IDENTIFIER '(' expression ',' expressions ')'
+    {
+    }
+    | VLOG_PRIMITIVE_OR delay2 '(' expression ',' expressions ')'
+    {
+    }
+    | VLOG_PRIMITIVE_OR delay2 VLOG_IDENTIFIER '(' expression ',' expressions ')'
+    {
+    }
+    | VLOG_PRIMITIVE_NOR delay2 '(' expression ',' expressions ')'
+    {
+    }
+    | VLOG_PRIMITIVE_NOR delay2 VLOG_IDENTIFIER '(' expression ',' expressions ')'
+    {
+    }
+    | VLOG_PRIMITIVE_XOR delay2 '(' expression ',' expressions ')'
+    {
+    }
+    | VLOG_PRIMITIVE_XOR delay2 VLOG_IDENTIFIER '(' expression ',' expressions ')'
+    {
+    }
+    | VLOG_PRIMITIVE_XNOR delay2 '(' expression ',' expressions ')'
+    {
+    }
+    | VLOG_PRIMITIVE_XNOR delay2 VLOG_IDENTIFIER '(' expression ',' expressions ')'
+    {
+    }
+    | VLOG_PRIMITIVE_NOT delay2 '(' expressions ',' expression ')'
+    {
+    }
+    | VLOG_PRIMITIVE_NOT delay2 VLOG_IDENTIFIER '(' expressions ',' expression ')'
+    {
+    }
+    | VLOG_PRIMITIVE_BUF delay2 '(' expressions ',' expression ')'
+    {
+    }
+    | VLOG_PRIMITIVE_BUF delay2 VLOG_IDENTIFIER '(' expressions ',' expression ')'
+    {
+    }
+    ;
+
+module_instantiation:
+    primitive_instantiation
+    {
+        $$ = $1;
+    }
+    | VLOG_IDENTIFIER parameter_value_assignments VLOG_IDENTIFIER
+    {
+        yyportPosition = 0;
+        
+    }
+    '(' port_connections ')'
+    {
+        $$ = new Instantiation();//need to add some names' check here
+        $$->type = $1.s;
+        $$->name = $3.s;
+        $$->parameters = $2;
+        $$->connections = $6;
+        $$->primitive = Instantiation::ISNT_PRIMITIVE;
+        $$->lineno=$1.Line_no;
+    }
+    ;
+    
+parameter_value_assignments: /* empty */
+    {
+    }
+    | '#' '(' parameter_value_list ')'
+    {
+    }
+    ;
+    
+parameter_value_list:
+    expression
+    {
+    }
+    | parameter_value_list ',' expression
+    {
+    }
+    ;
+    
+port_connections: /* empty */
+    {
+        $$ = new list<PortConnection*>;
+    }
+    | ordered_port_connections
+    {
+        $$ = $1;
+    }
+    | named_port_connections
+    {
+        $$ = $1;
+    }
+    ;
+
+ordered_port_connections:
+    ordered_port_connection 
+    {
+        $$ = new list<PortConnection*>(1, $1);
+    }
+    | ','
+    {
+        PortConnection *unconnectedPort = new PortConnection();
+        unconnectedPort->position = yyportPosition;
+        unconnectedPort->value = NULL;
+        
+        $$ = new list<PortConnection*>(1, unconnectedPort);
+    }
+    | ordered_port_connections ',' 
+    {
+        yyportPosition++;
+    }
+    ordered_port_connection
+    {
+        $$ = $1;
+        $$->push_back($4);
+    }
+    | ordered_port_connections ',' 
+    {
+        yyportPosition++;
+        $$ = $1;
+
+        PortConnection *unconnectedPort = new PortConnection();
+        unconnectedPort->position = yyportPosition;
+        unconnectedPort->value = NULL;
+        $$->push_back(unconnectedPort);
+    }
+    ;
+
+named_port_connections:
+    named_port_connection
+    {
+        $$ = new list<PortConnection*>(1,$1);
+    }
+    | named_port_connections ',' named_port_connection
+    {
+        $$ = $1;
+        $$->push_back($3);
+    }
+    ;
+
+
+named_port_connection:
+    '.' VLOG_IDENTIFIER '(' ')'
+    {
+        $$ = new PortConnection();
+        $$->name = $2.s;
+        $$->value = NULL;
+        $$->lineno=$2.Line_no;
+    }
+    | '.' VLOG_IDENTIFIER '(' expression ')'
+    {
+        $$ = new PortConnection();
+        $$->name = $2.s;
+        $$->value = $4;
+        $$->lineno=$2.Line_no;
+    }
+    ;
+    
+ordered_port_connection: 
+    expression
+    {
+        $$ = new PortConnection();
+        $$->position = yyportPosition;
+        $$->value = $1;
+    }
+    ;
+    
+statements: /* empty */
+    {
+        $$ = new list<Statement*>;
+    }
+    | statements statement
+    {
+        assert($1);
+        $$ = $1;
+        $$->push_back($2);
+    }
+    ;
+    
+triggers:
+    trigger
+    {
+    }
+    | triggers VLOG_PRIMITIVE_OR trigger
+    {
+    }
+    ;
+
+trigger:
+    net_lval
+    {
+    }
+    | VLOG_POSEDGE net_lval
+    {
+    }
+    | VLOG_NEGEDGE net_lval
+    {
+    }
+    ;
+
+case_conditions:
+    expression
+    {
+    }
+    | case_conditions ',' expression
+    {
+    }
+    ;
+    
+case_items:
+    {
+    }
+    | case_items case_conditions ':' statement
+    {
+    }
+    | case_items VLOG_DEFAULT ':' statement
+    { 
+    }
+    ;
+
+system_parameters:
+    system_parameter
+    | system_parameters ',' system_parameter
+    ;
+    
+system_parameter:
+    VLOG_STRING                { }
+    | VLOG_SYSTEM_IDENTIFIER   { }
+    | VLOG_IDENTIFIER          { }
+    ;
+    
+system_call:
+    VLOG_SYSTEM_IDENTIFIER 
+    {
+        cerr << "NOTE: Ignoring system call $" << $1.s << endl;    
+    }
+    | VLOG_SYSTEM_IDENTIFIER '(' system_parameters ')'
+    {
+        cerr << "NOTE: Ignoring system call $" << $1.s << endl;    
+    }
+    ;
+
+statement:
+    ';'
+    {
+        $$ = new Statement();
+        $$->type = Statement::NOP;
+    }
+    | system_call ';'
+    {
+    }
+    | VLOG_BEGIN statements VLOG_END
+    {
+    }
+    | VLOG_BEGIN ':' VLOG_IDENTIFIER block_declaration_items statements VLOG_END
+    {$$->lineno=$3.Line_no;
+    }
+    | VLOG_CASE '(' expression ')' case_items VLOG_ENDCASE
+    {
+    }
+    | VLOG_CASEX '(' expression ')' case_items VLOG_ENDCASE
+    {
+    } 
+    | VLOG_CASEZ '(' expression ')' case_items VLOG_ENDCASE
+    {
+    }
+    | VLOG_IF '(' expression ')' statement
+    {
+    }
+    | VLOG_IF '(' expression ')' statement VLOG_ELSE statement
+    {  
+    }
+    | net_lval '=' delay_control expression ';'
+    {
+    }
+    | net_lval VLOG_LE delay_control expression ';'
+    {
+    }
+    | VLOG_FOR '(' VLOG_IDENTIFIER '=' expression ';' expression ';' VLOG_IDENTIFIER '=' expression ')' statement
+    {$$->lineno=$3.Line_no;
+    }
+    | delay_expr
+    {
+    	/* Not used */
+    }
+    ;
+    
+delay_control: /* empty */
+    | delay_expr
+    ;
+
+delay_expr:
+	  '#' delay_value
+    | '#' '(' mintypmax_expression ')'
+    ;
+    
+mintypmax_expression:
+    expression                                     { }
+    | expression ':' expression ':' expression     { }
+    ;
+
+	/* this rule is added for the additional info passed in the form of comment */
+	/* some of the tokens are just created for use in this rule only */    
+attribute_in_comment:
+		VLOG_ATTRIBUTE_HEADER VLOG_IDENTIFIER VLOG_OF_IN_COMMENT VLOG_IDENTIFIER VLOG_IS_IN_COMMENT VLOG_STRING
+		{
+			$$ = new Attribute($2.s, $4.s, $6.s);
+            $$->lineno=$2.Line_no;
+			std::cout << "get in the comment" << std::endl;
+		} 
+    ;
+%%
+
+void yyerror(const char *str)
+{
+    static_cast<void>(str);
+    if (!strcmp(str, "parser stack overflow")) {
+        cerr << "ERROR: File too large.  Parser stack overflow at " << endl << yyfilename << " : " << "Line " << yylineno << endl;
+    } else if (!strcmp(str, "syntax error")) {
+        cerr << "ERROR: Syntax error at " << endl << yyfilename << " : " << "Line " << yylineno << endl;
+    } else {
+        cerr << "ERROR: " << str << endl << " at " << yyfilename << " : " << "Line " <<  yylineno << endl;
+    }
+    assert(false);
+    exit(1);
+}

@@ -1,0 +1,50 @@
+<?xml version='1.0' encoding='ISO-8859-1' ?>
+<?xml-stylesheet type='text/xsl' href='fdu_report.xsl' ?>
+<report app="MAP" label="Xilinx Mapping Report File" design="fpga_top">
+	<section id="DESIGN_INFO" label="Design Information">
+		<item id="CMD_LINE" label="Command Line"/>
+		<item id="TARGET_DEVICE" label="Target Device"/>
+		<item id="TARGET_PACKAGE" label="Target Package"/>
+		<item id="TARGET_SPEED" label="Target Speed"/>
+		<item id="VERSION" label="Mapper Version"/>
+		<item id="TIMESTAMP" label="Mapper Date"/>
+	</section>
+	<section id="DESIGN SUMMARY" label="Design Summary">
+		<item id="NUM_ERROR" label="Number of errors"/>
+		<item id="NUM_WARN" label="Number of warnings"/>
+		<item id="LOGIC_UTIL" label="Logic Utilization">
+			<item id="NUM_SLICE_FF" label="Number of Slice Flip Flops"/>
+			<item id="NUM_LUT4" label="Number of 4-input LUTs"/>
+		</item>
+		<item id="LOGIC_DIST" label="Logic Distribution">
+			<item id="OCCUPIED_SLICE" label="Number of occupied Slices"/>
+			<item id="SLICE_RELATED" label="Number of Slices containing only related logic"/>
+			<item id="SLICE_UNRELATED" label="Number of Slices containing unrelated logic"/>
+			<item id="TOTAL_LUT4" label="Total Number of 4-input LUTs">
+				<item id="LUT4_LOGIC" label="Number used as logic"/>
+				<item id="LUT4_ROUTE_THRU" label="Number used as route thru"/>
+			</item>
+			<item id="NUM_BONDED_IO" label="Number of bonded IOBs">
+				<item id="IOB_FF" label="IOB Flip Flops"/>
+			</item>
+			<item id="NUM_BRAM" label="Number of Block RAMs"/>
+			<item id="NUM_GCLK" label="Number of GCLKs"/>
+			<item id="NUM_GCLKIOB" label="Number of GCLKIOBs"/>
+		</item>
+	</section>
+	<section id="MAP_IOB_PROPERTIES">
+		<table id="MAP_IOB_TABLE" label="Map IOB Table">
+			<column id="IOB_NAME" label="IOBName"/>
+			<column id="TYPE" label="Type"/>
+			<column id="DIRECTION" label="Direction"/>
+			<column id="IO_STANDARD" label="IOStandard"/>
+			<column id="DRIVE_STRENGTH" label="DriveStrength"/>
+			<column id="SLEW_RATE" label="SlewRate"/>
+		</table>
+	</section>
+
+	<item id="PEAK_MEMORY" label="Peak Memory Usage"/>
+	<item id="REAL_TIME" label="Total REAL time to MAP completion"/>
+	<item id="CPU_TIME" label="Total CPU time to MAP completion"/>
+</report>
+
